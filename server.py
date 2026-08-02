@@ -50,7 +50,12 @@ async def list_tools():
     return [
         Tool(
             name="scan_evtx",
-            description="Scan an EVTX file with Hayabusa to detect suspicious activity",
+            description=(
+                "Scan an EVTX file with Hayabusa to detect suspicious activity, using the "
+                "bundled Hayabusa/SigmaHQ catalog (hayabusa/rules/, ~4,961 rules) so findings "
+                "aren't limited to our own rules. Note analyze_coverage assesses custom_rules/ "
+                "instead, so its coverage verdicts describe a different, much smaller ruleset."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -111,9 +116,9 @@ async def list_tools():
         Tool(
             name="analyze_coverage",
             description=(
-                "Assess detection coverage for an ATT&CK technique or tactic, using the bundled "
-                "Hayabusa/SigmaHQ ruleset (hayabusa/rules/, ~4,961 rules — the same rules "
-                "scan_evtx actually runs). Given a technique_id (e.g. \"T1003\" or "
+                "Assess detection coverage for an ATT&CK technique or tactic, using our own "
+                "curated ruleset (custom_rules/) — NOT the bundled catalog that scan_evtx runs "
+                "against, so most techniques will report as gaps. Given a technique_id (e.g. \"T1003\" or "
                 "\"T1003.001\") or a tactic (e.g. \"credential-access\" or \"Credential Access\"), "
                 "returns which techniques are covered, partially covered, or gaps, and how many "
                 "matching rules exist for each. Provide exactly one of technique_id or tactic."
@@ -143,7 +148,7 @@ async def list_resources() -> list[Resource]:
             uri=RESOURCE_URI_PREFIX,
             name="rules",
             title="All detection rules",
-            description="Index of every Sigma rule in the detection engineering knowledge base (rules/)",
+            description="Index of every Sigma rule in the detection engineering knowledge base (custom_rules/)",
             mimeType="application/json",
         )
     ]
@@ -192,8 +197,8 @@ async def list_resource_templates() -> list[ResourceTemplate]:
             uriTemplate=f"{ATTACK_URI_PREFIX}/{{technique_id}}",
             name="attack_technique",
             description=(
-                "Get an ATT&CK technique's name and description, which bundled Hayabusa/SigmaHQ "
-                "rules detect it, and a coverage assessment (covered/partial/gap)"
+                "Get an ATT&CK technique's name and description, which of our curated "
+                "custom_rules/ detect it, and a coverage assessment (covered/partial/gap)"
             ),
             mimeType="application/json",
         ),
@@ -634,7 +639,12 @@ async def _scan_evtx(arguments: dict) -> list[TextContent]:
         output_path = Path(tmp_dir) / "results.jsonl"
 
         try:
-            result = _run_hayabusa(evtx_path, output_path, KB_RULES_DIR)
+            # RULES_DIR (the bundled ~5000-rule catalog), deliberately NOT
+            # KB_RULES_DIR: scanning maximizes what's found in an EVTX, while
+            # analyze_coverage and the detection:// resources assess custom_rules/
+            # instead. The two report on different rulesets on purpose — "what did
+            # the full catalog find here" vs "what do our own rules cover".
+            result = _run_hayabusa(evtx_path, output_path, RULES_DIR)
         except FileNotFoundError:
             return _error(f"Hayabusa executable not found or not executable at {HAYABUSA_PATH}")
         except subprocess.TimeoutExpired:
