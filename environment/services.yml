@@ -1,0 +1,34 @@
+# Critical services in this environment, and why each matters for
+# detection/response prioritization. related_techniques point at the
+# ATT&CK techniques most relevant to a compromise of that service.
+services:
+  - name: Active Directory Domain Services
+    hosts: [DC1.insecurebank.local, DC2.insecurebank.local]
+    criticality: critical
+    impact_if_compromised: >
+      Full domain compromise; an attacker could forge Kerberos tickets, dump
+      all domain credentials via DCSync, or create rogue accounts.
+    related_techniques: [T1003.006, T1558.001]
+  - name: Customer Banking Portal
+    hosts: [WEB1.insecurebank.local]
+    criticality: critical
+    impact_if_compromised: >
+      Direct customer financial data exposure and potential fraudulent
+      transactions; the primary revenue-generating and regulator-visible
+      system in the environment.
+    related_techniques: [T1190]
+  - name: Finance File Shares
+    hosts: [FS1.insecurebank.local]
+    criticality: high
+    impact_if_compromised: >
+      Exposure of financial records, wire-transfer documentation, and
+      payroll data.
+    related_techniques: [T1005]
+  - name: Helpdesk Remote Administration Tooling
+    hosts: [WS-HELPDESK-07]
+    criticality: high
+    impact_if_compromised: >
+      An attacker could pivot to nearly any endpoint via the helpdesk
+      account's broad local admin access — a compromise here is a fast
+      path to domain-wide lateral movement.
+    related_techniques: [T1550.002]

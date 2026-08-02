@@ -1,0 +1,39 @@
+title: Applications That Are Using ROPC Authentication Flow
+id: 55695bc0-c8cf-461f-a379-2535f563c854
+status: test
+description: |
+    Resource owner password credentials (ROPC) should be avoided if at all possible as this requires the user to expose their current password credentials to the application directly.
+    The application then uses those credentials to authenticate the user against the identity provider.
+references:
+    - https://learn.microsoft.com/en-us/entra/architecture/security-operations-applications#application-authentication-flows
+    - https://attack.mitre.org/techniques/T1078/
+author: Mark Morowczynski '@markmorow', Bailey Bercik '@baileybercik'
+date: 2022-06-01
+tags:
+    - attack.t1078
+    - attack.defense-evasion
+    - attack.persistence
+    - attack.privilege-escalation
+    - attack.initial-access
+logsource:
+    product: azure
+    service: signinlogs
+# Severity: medium — ROPC bypasses MFA and conditional access by having the app
+# handle the user's raw password directly, but legacy apps and automated test
+# harnesses have a legitimate reason to use it, so this is a narrowing signal
+# rather than a high-confidence compromise indicator on its own.
+# test_case:
+#   sample: synthesized Azure AD sign-in log entry
+#   expect: match
+#   notes: properties.message contains "ROPC" for an app registration →
+#     should trigger.
+#   negative:
+#     notes: properties.message for the same app using the authorization-code
+#       or device-code flow (no "ROPC" substring) → expect: no_match.
+detection:
+    selection:
+        properties.message: ROPC
+    condition: selection
+falsepositives:
+    - Applications that are being used as part of automated testing or a legacy application that cannot use any other modern authentication flow
+level: medium

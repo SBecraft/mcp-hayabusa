@@ -1,0 +1,38 @@
+title: Suspicious Process Access to LSASS Memory
+id: 8e1e2f3a-4b5c-4d6e-9f70-1a2b3c4d5e6f
+status: experimental
+description: |
+    Detects process access requests to lsass.exe with access masks commonly
+    associated with credential dumping tools (e.g. Mimikatz) reading LSASS
+    process memory to extract credentials.
+references:
+    - https://attack.mitre.org/techniques/T1003/001/
+author: mcp-hayabusa sample rules
+date: 2026-07-12
+tags:
+    - attack.credential-access
+    - attack.t1003.001
+logsource:
+    product: windows
+    category: process_access
+    definition: 'Requires Sysmon Event ID 10 (ProcessAccess) with GrantedAccess logging enabled'
+detection:
+    selection_target:
+        TargetImage|endswith: '\lsass.exe'
+    selection_access:
+        GrantedAccess:
+            - '0x1010'
+            - '0x1410'
+            - '0x1438'
+            - '0x143a'
+            - '0x1fffff'
+    filter_known_tools:
+        SourceImage|endswith:
+            - '\MsMpEng.exe'
+            - '\WmiPrvSE.exe'
+            - '\svchost.exe'
+    condition: selection_target and selection_access and not filter_known_tools
+falsepositives:
+    - Legitimate security/EDR products reading LSASS for monitoring purposes
+    - Backup or crash-dump tooling with broad process access rights
+level: high

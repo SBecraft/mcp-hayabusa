@@ -1,0 +1,108 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project overview
+
+An MCP (Model Context Protocol) server that wraps [Hayabusa](https://github.com/Yamato-Security/hayabusa) (a Windows event log analysis tool) for EVTX file analysis, and doubles as a small detection engineering knowledge base. It exposes three tools:
+- `scan_evtx` — runs Hayabusa against an EVTX file and returns structured JSON findings, filterable by severity and rule title. Scans only `custom_rules/` (the curated, ATT&CK-tagged sample set) — not the bundled `hayabusa/rules/`.
+- `get_hayabusa_rules` — lists the Sigma detection rules Hayabusa ships with (the bundled `hayabusa/rules/` set), optionally filtered by keyword. This is the only tool or resource in the server that still reads the bundled catalog (see Conventions) — useful for browsing what Hayabusa itself ships, but a `rule_filter` string found here won't necessarily match anything `scan_evtx` returns, since `scan_evtx` scans `custom_rules/` instead.
+- `analyze_coverage` — given an ATT&CK technique ID or tactic name, reports which techniques our curated `custom_rules/` set covers, partially covers, or leaves as gaps. Combines the resource-side ATT&CK data with the same coverage logic backing `detection://attack/techniques/{technique_id}`, but works over a whole technique subtree or tactic in one call instead of one technique at a time. With only 8 curated rules across 6 techniques, most techniques will show as gaps — this is expected, not a bug.
+
+...and four MCP resources backing the knowledge-base side, all under the `detection://` URI scheme:
+- `detection://rules` — index of our own curated Sigma rules (distinct from the ~5000 Hayabusa ships).
+- `detection://rules/{rule_name}` — a specific curated rule's raw YAML.
+- `detection://rules/by-technique/{technique_id}` — curated rules tagged with a given ATT&CK technique ID.
+- `detection://attack/techniques/{technique_id}` — an ATT&CK technique's name/description plus which *curated* `custom_rules/` rules detect it and a coverage verdict (`covered` / `partial` / `gap`).
+
+## Stack
+
+- Python 3, using the `mcp` library (`mcp.server.Server`, stdio transport), `pydantic`, and `pyyaml` (for parsing Sigma rule files — prefers the `CSafeLoader` libyaml binding when available, since parsing ~5000 rule files with the pure-Python loader takes ~6s vs ~0.6s with libyaml)
+- Hayabusa CLI, downloaded as a prebuilt binary (not built from source) and invoked as a subprocess
+
+## Architecture
+
+- `server.py` — the entire MCP server. Registers three tools, `scan_evtx`, `get_hayabusa_rules`, and `analyze_coverage`, via `@server.list_tools()` / `@server.call_tool()` (`call_tool` is a thin dispatcher to `_scan_evtx()` / `_get_hayabusa_rules()` / `_analyze_coverage()`), and four resources via `@server.list_resources()` / `@server.list_resource_templates()` / `@server.read_resource()`. Runs over stdio (`mcp.server.stdio.stdio_server`).
+- `hayabusa/` — the downloaded Hayabusa binary, its `rules/` (~5000 Sigma YAML files under `rules/sigma/` and `rules/hayabusa/`), and `config/`. Gitignored; not checked in. Populated by `scripts/download_hayabusa.py`. This is Hayabusa's *bundled* ruleset. As of the switches documented in Conventions, it's used **only** by `get_hayabusa_rules` — not by `scan_evtx`, `analyze_coverage`, or any `detection://` resource, all of which now run against `custom_rules/` instead.
+- `custom_rules/` — our own small, hand-curated, version-controlled set of Sigma rules mapped to ATT&CK techniques (e.g. `lsass_memory_access_process.yml` for T1003.001, `dcsync_replication_rights.yml` for T1003.006). Not gitignored — this is authored content, unlike the downloaded `hayabusa/` and `attack_data/`. Backs the `detection://rules*` resources, is the ruleset `scan_evtx` actually scans against (`-r custom_rules`), and is what `analyze_coverage`/`detection://attack/techniques/{technique_id}` assess coverage against.
+- `attack_data/enterprise-attack.json` — the MITRE ATT&CK Enterprise STIX bundle. Gitignored; not checked in. Populated by `scripts/download_attack_data.py`. Backs the `detection://attack/techniques/{technique_id}` resource.
+- `scripts/download_hayabusa.py` — fetches the latest Hayabusa GitHub release for the current OS/arch, extracts it into `hayabusa/`, and normalizes the binary name to `hayabusa/hayabusa` (or `hayabusa/hayabusa.exe` on Windows) so `server.py` can find it at a fixed path regardless of version.
+- `scripts/download_attack_data.py` — downloads MITRE's `enterprise-attack.json` STIX bundle (~53MB) to `attack_data/`.
+- `tests/test_scan_evtx.py` — manual smoke test; calls `server.call_tool()` directly (no MCP client/transport involved) against `tests/samples/CA_DCSync_4662.evtx`.
+- `.mcp.json` — registers this server for local Claude Code use, pointing at `venv/bin/python server.py`. Uses absolute paths for `command`/`cwd`, so if this repo is ever moved/cloned to a new location, these must be updated to match — a stale path here is why the connector can silently disappear from Claude Code (it just fails to launch).
+
+### Request flow
+
+1. `call_tool("scan_evtx", {evtx_path, min_severity, rule_filter, output_format, max_results})` validates all arguments (known severity level, known output format, non-empty `rule_filter`, positive-int `max_results`) before touching the filesystem.
+2. Hayabusa runs via subprocess as `json-timeline` against `custom_rules/` (`-r custom_rules`, explicit — not the bundled `hayabusa/rules/`; see Conventions), writing JSONL to a temp file (see flag rationale below), with a 300s timeout. Hayabusa always runs every rule in whatever directory `-r` points at — `rule_filter` and `min_severity` are not passed through as Hayabusa CLI flags.
+3. Output is parsed line-by-line as JSON, then filtered in Python in `_filter_records`: by `Level` against `min_severity`, and by case-insensitive substring match of `rule_filter` against `RuleTitle`. Both are post-hoc rather than native Hayabusa flags — Hayabusa's `--min-level` filters which *rules load*, not which *detections* are returned, and Hayabusa has no free-text rule-title filter at all (only `--include-tag`/`--include-category`), so post-hoc filtering is the only way to support `rule_filter` and to report `total_detections` vs `filtered_detections` separately.
+4. `max_results` truncates the filtered list (`filtered_detections` still reports the pre-truncation count; `returned_detections` reports what's actually in `findings`).
+5. `output_format` controls per-finding shape: `"summary"` (default) reduces each finding to `SUMMARY_FIELDS` (`Timestamp`, `RuleTitle`, `Level`, `Computer`, `EventID`, `RecordID`); `"full"` returns every field Hayabusa emitted, including `Details`, `ExtraFieldInfo`, and `RuleID`.
+6. Response JSON includes `evtx_path`, `min_severity`, `rule_filter`, `output_format`, `total_detections`, `filtered_detections`, `returned_detections`, and `findings`.
+
+### Rule listing flow (`get_hayabusa_rules`)
+
+1. `_load_rules()` walks `RULES_DIR` (`hayabusa/rules/`) for every `*.yml`, skipping anything under `.git/`, and parses just the first YAML document per file (`yaml.load_all(...)` + take the first — a few rule files are multi-document, e.g. Sigma correlation rules, and only the first document carries `title`/`level`). Files that fail to parse or lack a `title` key are silently skipped rather than erroring the whole listing.
+2. Results are cached in the module-level `_rules_cache` for the process lifetime — the rules directory is populated once by `scripts/download_hayabusa.py` and never changes while the server runs, so re-parsing ~5000 files on every call would be pure waste. Cold call ≈0.6–0.8s; cached calls are near-instant.
+3. Rules are sorted by `level` (critical → informational) then title, so a `max_results` cap surfaces the most severe rules first.
+4. `keyword`, if given, does a case-insensitive substring match against the rule's `title`, `description`, and joined `tags` (`_filter_rules`) — there's no external search index; this is a linear scan over the cached list.
+5. Response JSON includes `keyword`, `total_rules`, `matched_rules`, `returned_rules`, and `rules` (each with `id`, `title`, `level`, `status`, `description`, `tags`, `logsource`, and `path` relative to `RULES_DIR`).
+
+### Coverage analysis flow (`analyze_coverage`)
+
+1. Takes exactly one of `technique_id` (e.g. `"T1003"` or `"T1003.001"`) or `tactic` (e.g. `"Credential Access"` or `"credential-access"`, matched case/spacing-insensitively against ATT&CK tactic names and shortnames via `_normalize_tactic()`/`_load_attack_tactics()`, which parses `x-mitre-tactic` objects from the STIX bundle). Providing both or neither is an error.
+2. `_resolve_techniques()` expands the query into the full list of ATT&CK technique dicts it covers: a bare technique ID also pulls in every sub-technique (prefix match, e.g. `"T1003"` expands to `T1003.001`, `T1003.002`, ... `T1003.008` plus itself); a tactic pulls in every technique whose `kill_chain_phases` include that tactic's shortname (`_load_attack_techniques()` now also carries each technique's `tactics` list for this).
+3. `_build_coverage_report()` runs `_rules_for_technique()` (matches the curated `custom_rules/` set against a technique's `attack.tXXXX[.YYY]` tags, via the shared `_technique_tag_matches()` helper — the same function `detection://rules/by-technique/{technique_id}` uses) and `_assess_coverage()` (the same covered/partial/gap logic backing `detection://attack/techniques/{technique_id}`) per resolved technique — a batch/aggregate view over the same curated-ruleset coverage logic the resource exposes one technique at a time. One rule source, one matching function, used for both curated-rule browsing and coverage assessment — no separate logic to keep in sync.
+4. Response JSON includes `query`, `techniques_assessed`, `summary` (counts of covered/partial/gap), `gap_techniques` (id + name for every gap), and `details` (per-technique id, name, coverage, and `rule_count`). With only 8 curated rules, `rule_count` per technique is small (0-3) and a tactic sweep will show mostly gaps — this reflects the small curated set, not a bug.
+5. Requires `attack_data/enterprise-attack.json` (same as the `detection://attack/techniques/*` resource) — errors if it's missing, telling the caller to run `scripts/download_attack_data.py`.
+
+### Resource flow (detection engineering knowledge base)
+
+1. `_load_kb_rules()` parses every `*.yml`/`*.yaml` under `KB_RULES_DIR` (`custom_rules/`) into `{path, raw, doc}`, keyed by file stem (e.g. `dcsync_replication_rights`). Cached in `_kb_rules_cache` for the process lifetime, same rationale and same non-invalidation caveat as `_rules_cache`.
+2. `list_resources()` returns: one `detection://rules` index resource, one `detection://rules/{rule_name}` resource per curated rule, and one `detection://attack/techniques/{technique_id}` resource per distinct ATT&CK technique ID actually tagged across `custom_rules/` (via `_extract_technique_ids`) — so techniques are browsable without a client having to guess IDs. `list_resource_templates()` additionally advertises the three parameterized URI shapes (`{rule_name}`, `by-technique/{technique_id}`, `attack/techniques/{technique_id}`) for IDs not already enumerated.
+3. `read_resource(uri)` dispatches by prefix:
+   - `detection://rules` (bare) → JSON array of rule summaries (`name`, `uri`, `id`, `title`, `level`, `status`, `tags`, `path`).
+   - `detection://rules/{rule_name}` → that rule's raw YAML (`application/yaml`).
+   - `detection://rules/by-technique/{technique_id}` → JSON array of rule summaries whose Sigma `tags` contain `attack.t...` matching `technique_id` (`_rules_for_technique`/`_normalize_technique_tag`) — matching is exact-or-prefix, so a parent ID like `T1003` also matches sub-technique rules tagged `T1003.001`, `T1003.006`, etc.
+   - `detection://attack/techniques/{technique_id}` → `_read_attack_technique()` combines `_load_attack_techniques()` (parsed from `attack_data/enterprise-attack.json`, keyed by technique ID from STIX `external_references`, skipping revoked/deprecated entries, cached in `_attack_techniques_cache`) with `_rules_for_technique()` — matching against `custom_rules/`, same as `detection://rules/by-technique/{technique_id}` — returning `{technique_id, name, description, rule_count, detecting_rules, coverage}`.
+   - Anything else, or an unknown rule/technique ID, raises `ValueError` (resources signal failure by raising, unlike the tools' structured `{"error": ...}` JSON convention).
+4. Coverage assessment (`_assess_coverage`): `"gap"` if no curated rule tags the technique; `"covered"` if at least one matching rule is `high`/`critical` severity; `"partial"` otherwise (rules exist but none reach high/critical). `detection://rules/by-technique/{technique_id}` and coverage assessment (`analyze_coverage`, `detection://attack/techniques/{technique_id}`) now share one rule source (`custom_rules/`, via `_rules_for_technique()`) — they used to assess against the bundled `hayabusa/rules/` set instead, but that made "what have we authored" and "what can actually be detected" two different questions with two different answers; they were unified onto `custom_rules/` per an explicit assignment requirement ("reads our detection rules from resources").
+
+### Key subprocess flags (`_run_hayabusa` in `server.py`)
+
+Each flag is deliberate — see inline comments in `server.py` before changing:
+- `-r custom_rules` (not `hayabusa/rules/`): scans the curated sample ruleset, not the bundled catalog — see Conventions for why `scan_evtx` targets a different ruleset than `get_hayabusa_rules` does.
+- `-L` (JSONL, not `-o` alone): `-o` alone emits concatenated pretty-printed objects, which is not valid parseable JSON.
+- `-w` (no-wizard): prevents Hayabusa from blocking on an interactive prompt when invoked as a subprocess.
+- `-q` / `-Q` / `-K`: suppress the launch banner, error log files, and ANSI color — all of which would otherwise pollute or break output parsing.
+- `-b` (no-abbreviations): keeps `Level` as full words (`"critical"`, not `"crit"`) since `_filter_records` matches against full severity names.
+
+### Error handling
+
+`server.py` returns structured `{"error": ...}` JSON (via `_error()`) rather than raising, for all three tools: missing `evtx_path` arg, invalid `min_severity`/`output_format`, empty `rule_filter`/`keyword`, non-positive `max_results`, missing EVTX file, missing/non-executable Hayabusa binary, missing rules directory, subprocess timeout, non-zero exit code, missing output file, JSON parse failure, and (for `analyze_coverage`) missing/both/neither `technique_id`/`tactic`, unknown technique ID, unknown tactic name, and missing ATT&CK data. This keeps failures visible to the MCP client as tool output instead of transport-level errors.
+
+## Conventions
+
+- The Hayabusa binary and the ATT&CK STIX bundle are never committed; both are fetched per-machine (`scripts/download_hayabusa.py`, `scripts/download_attack_data.py`) and gitignored along with `venv/` and `__pycache__/`. `custom_rules/` is the opposite — it's authored content, checked into git.
+- `HAYABUSA_PATH` in `server.py` is resolved by `platform.system()`, not by an env var or config — keep platform detection there if extending to more OSes.
+- Sample EVTX files for manual testing live in `tests/samples/` (sourced from the public [EVTX-ATTACK-SAMPLES](https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES) repo) — cite the source in a comment when adding new ones.
+- `_rules_cache`, `_kb_rules_cache`, `_attack_techniques_cache`, and `_attack_tactics_cache` all assume their respective source (`hayabusa/rules/`, `custom_rules/`, `attack_data/enterprise-attack.json`) is immutable for the process's lifetime. If any of these can ever change while the server is running (e.g. a future "refresh rules" tool, or hand-editing `custom_rules/` mid-session), that cache will need explicit invalidation.
+- New curated rules go in `custom_rules/` as plain Sigma YAML with `attack.tXXXX[.YYY]`-style tags — that's the only thing `_extract_technique_ids`/`_rules_for_technique` look for to connect a rule to an ATT&CK technique. The same tag convention (already present in Hayabusa's shipped Sigma rules) is used by `get_hayabusa_rules`/`_load_rules()` for the bundled catalog, but coverage assessment and `by-technique` browsing both now read `custom_rules/` exclusively via `_rules_for_technique()` — there is no longer a bundled-ruleset coverage path in this server.
+- `.claude/skills/detection-engineering/SKILL.md` enforces stricter standards on every rule in `custom_rules/` beyond the bare `attack.tXXXX[.YYY]` tag requirement above: at least one ATT&CK tag (rejecting untagged rules), a `level` whose choice is justified in `description`, a non-empty `falsepositives:` list of concrete scenarios, a `# test_case:` YAML-comment block above `detection:`, and a `lower_snake_case.yml` filename. This skill triggers automatically when writing, editing, or reviewing Sigma rules under `custom_rules/`.
+- **If this repo is moved or re-cloned to a new path, `.mcp.json`'s `command`/`cwd` (absolute paths) must be updated to match, or the connector fails to launch and silently disappears from Claude Code's server list** — this already happened once (the repo moved from `$HOME/mcp-hayabusa` to `$HOME/ai-defense-labs/mcp-hayabusa` and `.mcp.json` wasn't updated with it).
+- **`scan_evtx`, `analyze_coverage`, and all `detection://` resources now run against `custom_rules/` exclusively — `hayabusa/rules/` (the bundled ~4,961-rule catalog) is used only by `get_hayabusa_rules`.** This was a deliberate, assignment-driven pair of switches, not an accident:
+  - `scan_evtx`: `_run_hayabusa` passes `-r custom_rules` explicitly, so EVTX scanning exercises the hand-authored, ATT&CK-tagged sample ruleset from the "Get Sample Rules" step, not the bundled catalog.
+  - `analyze_coverage` / `detection://attack/techniques/{technique_id}`: both now call `_rules_for_technique()` against `custom_rules/` (via `_load_kb_rules()`), the same function `detection://rules/by-technique/{technique_id}` already used — per an explicit assignment requirement that this tool "reads our detection rules from resources." The old bundled-ruleset coverage path (`_bundled_rules_for_technique()`) was removed as dead code once both call sites switched.
+  - Net effect: `get_hayabusa_rules` is now the *only* place in the server that reads the bundled `hayabusa/rules/` catalog. A `rule_filter` string found via `get_hayabusa_rules` won't necessarily match anything `scan_evtx` returns, since the two tools now run against different rulesets — this is expected, not a bug. Coverage numbers from `analyze_coverage` are correspondingly sparse (8 curated rules across 6 techniques, so most techniques show as gaps) rather than the near-full coverage the bundled ruleset gave.
+
+## Running
+
+- Install Hayabusa: `python scripts/download_hayabusa.py`
+- Install ATT&CK data (needed for `detection://attack/techniques/{technique_id}`): `python scripts/download_attack_data.py`
+- Install deps: `pip install -r requirements.txt`
+- Manual smoke test: `python tests/test_scan_evtx.py`
+- Run the server standalone: `python server.py` (stdio transport; normally launched by an MCP client per `.mcp.json`)
+
+## Notes for future updates
+
+There is no automated test suite yet (only the manual smoke test above) and no lint/format tooling configured. If those are added, document the exact commands here, including how to run a single test.

@@ -1,0 +1,57 @@
+title: LSASS Memory Dump via MiniDumpWriteDump API Call
+id: 9d0e1f2a-3b4c-4d5e-8f60-1a2b3c4d5e71
+status: experimental
+description: |
+    Detects process access to lsass.exe where the call trace includes
+    dbghelp.dll or dbgcore.dll, the modules that export MiniDumpWriteDump —
+    the Win32 API used by credential-dumping tools (Mimikatz, ProcDump, and
+    custom loaders) to write LSASS process memory to a dump file for offline
+    credential extraction. Rated high rather than critical because Task
+    Manager's built-in "Create dump file" feature and Windows Error Reporting
+    invoke the same API and DLLs for legitimate crash/diagnostic dumps,
+    giving this a narrow but real false-positive path.
+references:
+    - https://attack.mitre.org/techniques/T1003/001/
+    - https://learn.microsoft.com/en-us/windows/win32/api/minidumpapiset/nf-minidumpapiset-minidumpwritedump
+author: mcp-hayabusa sample rules
+date: 2026-07-13
+tags:
+    - attack.credential-access
+    - attack.t1003.001
+logsource:
+    product: windows
+    category: process_access
+    definition: 'Requires Sysmon Event ID 10 (ProcessAccess) with CallTrace logging enabled'
+# test_case:
+#   sample: synthesized Sysmon EventID 10 log line
+#   expect: match
+#   notes: TargetImage=C:\Windows\System32\lsass.exe, GrantedAccess=0x1410,
+#     CallTrace containing "C:\Windows\System32\dbghelp.dll" triggers
+#     selection_target + selection_access + selection_calltrace. The same
+#     event with SourceImage=C:\Windows\System32\WerFault.exe is excluded by
+#     filter_known_tools (expect: no_match).
+detection:
+    selection_target:
+        TargetImage|endswith: '\lsass.exe'
+    selection_access:
+        GrantedAccess:
+            - '0x1010'
+            - '0x1038'
+            - '0x1400'
+            - '0x1410'
+            - '0x1438'
+            - '0x143a'
+            - '0x1fffff'
+    selection_calltrace:
+        CallTrace|contains:
+            - 'dbghelp.dll'
+            - 'dbgcore.dll'
+    filter_known_tools:
+        SourceImage|endswith:
+            - '\WerFault.exe'
+            - '\Taskmgr.exe'
+    condition: selection_target and selection_access and selection_calltrace and not filter_known_tools
+falsepositives:
+    - Manual memory dump of lsass.exe via Task Manager's "Create dump file" feature by an administrator (Taskmgr.exe is filtered above, but a renamed or relocated copy would evade the filter)
+    - Windows Error Reporting (WerFault.exe) generating a crash dump if lsass.exe itself crashes (WerFault.exe is filtered above)
+level: high

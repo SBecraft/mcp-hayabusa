@@ -1,0 +1,45 @@
+# Normal behavior baselines, used during triage to distinguish expected
+# activity from anomalies for the alerts our custom_rules/ detect.
+baselines:
+  - subject: Domain controller replication traffic
+    hosts: [DC1.insecurebank.local, DC2.insecurebank.local]
+    normal: >
+      DCSync-shaped replication traffic (EventID 4662 with
+      DS-Replication-Get-Changes) is expected FROM each DC TO the other DC,
+      and from the svc-aadconnect service account. No other source is normal.
+    anomaly_indicators:
+      - DS-Replication-Get-Changes requests from a workstation or member server
+      - DS-Replication-Get-Changes requests from a user account rather than a computer/service account
+    related_alert: DCSync - Directory Replication Services Used to Dump Credentials
+  - subject: LSASS process access
+    hosts: [all]
+    normal: >
+      LSASS is accessed by known AV/EDR agents, Windows Defender
+      (MsMpEng.exe), and the WMI provider host (WmiPrvSE.exe) using routine,
+      low-privilege access flags.
+    anomaly_indicators:
+      - GrantedAccess flags associated with full memory read (e.g. 0x1010, 0x1438, 0x1fffff)
+      - SourceImage not matching an allow-listed AV/EDR/system process
+    related_alert: Suspicious Process Access to LSASS Memory
+  - subject: Kerberos service ticket encryption
+    hosts: [all]
+    normal: >
+      The environment enforces AES256 for Kerberos service tickets; RC4
+      (0x17) tickets are expected only for one documented legacy account,
+      svc-legacy-invoice, used by the finance department's legacy invoicing
+      system.
+    anomaly_indicators:
+      - RC4 (0x17) ticket requests for any account other than svc-legacy-invoice
+      - High volume of distinct SPN requests from a single account within a short window
+    related_alert: Potential Kerberoasting via RC4 Service Ticket Request
+  - subject: Helpdesk workstation logon patterns
+    hosts: [WS-HELPDESK-07]
+    normal: >
+      Helpdesk staff log on 07:00-18:00 local time, Monday-Friday,
+      primarily via RDP from the corporate VPN range (10.0.5.0/24), and
+      authenticate to remote systems via Kerberos.
+    anomaly_indicators:
+      - Logons outside business hours
+      - Logons originating from outside the VPN IP range
+      - NTLM network logons (Type 3) using this account, since helpdesk staff should authenticate via Kerberos
+    related_alert: Pass-the-Hash via Suspicious NTLM Network Logon

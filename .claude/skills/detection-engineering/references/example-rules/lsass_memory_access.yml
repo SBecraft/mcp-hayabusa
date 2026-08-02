@@ -1,0 +1,53 @@
+title: Suspicious Process Access to LSASS Memory (Example)
+id: a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+status: stable
+description: |
+    Example rule demonstrating every standard in the detection-engineering skill.
+    Detects process access requests to lsass.exe with access masks commonly
+    associated with credential-dumping tools (e.g. Mimikatz) reading LSASS
+    process memory to extract credentials.
+references:
+    - https://attack.mitre.org/techniques/T1003/001/
+    - https://learn.microsoft.com/en-us/sysinternals/downloads/procdump
+author: mcp-hayabusa sample rules
+date: 2026-07-13
+tags:
+    - attack.credential-access
+    - attack.t1003.001
+logsource:
+    product: windows
+    category: process_access
+    definition: 'Requires Sysmon Event ID 10 (ProcessAccess) with GrantedAccess logging enabled'
+# Severity: high — GrantedAccess masks in this range grant read access to
+# process memory sufficient to dump credential material from LSASS, which is
+# rarely needed outside dedicated security/EDR tooling. Not critical because a
+# narrow set of legitimate monitoring agents request the same access rights.
+# test_case:
+#   sample: synthesized Sysmon EventID 10 log line
+#   expect: match
+#   notes: TargetImage=C:\Windows\System32\lsass.exe, GrantedAccess=0x1410,
+#     SourceImage=C:\Users\Public\tool.exe triggers selection_target +
+#     selection_access.
+#   negative:
+#     notes: identical event with SourceImage=C:\Windows\System32\MsMpEng.exe
+#       is excluded by filter_known_tools (expect: no_match).
+detection:
+    selection_target:
+        TargetImage|endswith: '\lsass.exe'
+    selection_access:
+        GrantedAccess:
+            - '0x1010'
+            - '0x1410'
+            - '0x1438'
+            - '0x143a'
+            - '0x1fffff'
+    filter_known_tools:
+        SourceImage|endswith:
+            - '\MsMpEng.exe'
+            - '\WmiPrvSE.exe'
+            - '\svchost.exe'
+    condition: selection_target and selection_access and not filter_known_tools
+falsepositives:
+    - Legitimate security/EDR products (e.g. Windows Defender's MsMpEng.exe) reading LSASS for monitoring purposes
+    - Backup or crash-dump tooling granted broad process access rights during a scheduled maintenance window
+level: high

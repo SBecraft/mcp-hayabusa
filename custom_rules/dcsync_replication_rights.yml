@@ -1,0 +1,34 @@
+title: DCSync - Directory Replication Services Used to Dump Credentials
+id: 6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e
+status: experimental
+description: |
+    Detects use of the Directory Replication Service (DRS) Remote Protocol
+    to request replication of Active Directory data (DS-Replication-Get-Changes
+    / DS-Replication-Get-Changes-All) from a principal that is not a domain
+    controller, the pattern produced by Mimikatz's "lsadump::dcsync" and
+    similar tools to exfiltrate password hashes for any account, including
+    krbtgt, without touching a domain controller directly.
+references:
+    - https://attack.mitre.org/techniques/T1003/006/
+    - https://github.com/SigmaHQ/sigma/blob/master/rules/windows/builtin/security/win_security_dcsync.yml
+author: mcp-hayabusa sample rules
+date: 2026-07-12
+tags:
+    - attack.credential-access
+    - attack.t1003.006
+logsource:
+    product: windows
+    service: security
+    definition: 'Requires Directory Service Access auditing (Event ID 4662) to be enabled on domain controllers'
+detection:
+    selection:
+        EventID: 4662
+        Properties|contains:
+            - '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'  # DS-Replication-Get-Changes
+            - '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'  # DS-Replication-Get-Changes-All
+    filter_domain_controllers:
+        SubjectUserName|endswith: '$'
+    condition: selection and not filter_domain_controllers
+falsepositives:
+    - Legitimate domain controllers and Azure AD Connect / directory-sync service accounts
+level: critical
