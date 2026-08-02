@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "hayabusa": {
-      "command": "$HOME/ai-defense-labs/mcp-hayabusa/venv/bin/python",
+      "command": "venv/bin/python",
       "args": ["server.py"],
-      "cwd": "$HOME/ai-defense-labs/mcp-hayabusa"
+      "cwd": "."
     }
   }
 }

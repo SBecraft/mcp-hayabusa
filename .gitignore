@@ -3,3 +3,11 @@ hayabusa/
 attack_data/
 __pycache__/
 *.pyc
+
+# Machine-local Claude Code settings — not shared
+.claude/settings.local.json
+
+# Scratch/exploration artifacts (tool-output dumps, slide decks)
+credential_access_rules.json
+credential_rules
+hayabusa_rules_poc.pptx
