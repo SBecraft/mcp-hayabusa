@@ -4,9 +4,9 @@
 
 This repo is my working space for Modules 3 & 4 — MCP Hayabusa in AI Cyber Defense Ops, a Just Hacking Training (JHT) course offered by Women in CyberSecurity (WiCyS) and taught by Anton Ovrutsky. All modules found in the ai-defense-labs repo at https://github.com/SBecraft/ai-defense-labs
 
-The course centers on the Claude ecosystem — Claude Code and Claude Desktop — rather than treating AI as a single chat model bolted onto existing tools. Claude Code in particular behaves more like a productivity suite than a model: it ships with Hooks, Skills, Slash Commands, MCP support, and session/context management, and the course is built around learning how to compose those pieces into real detection engineering and threat intel workflows.
-
-*Source: [AI Cyber Defense Ops — course introduction](https://learn.justhacking.com/courses/3a440c2c-1a0f-4b14-b5c9-bf6cf47dade9/take/introduction)*
+> The course centers on the Claude ecosystem — Claude Code and Claude Desktop — rather than treating AI as a single chat model bolted onto existing tools. Claude Code in particular behaves more like a productivity suite than a model: it ships with Hooks, Skills, Slash Commands, MCP support, and session/context management, and the course is built around learning how to compose those pieces into real detection engineering and threat intel workflows.
+>
+> — [AI Cyber Defense Ops — course introduction](https://learn.justhacking.com/courses/3a440c2c-1a0f-4b14-b5c9-bf6cf47dade9/take/introduction)
 
 An MCP (Model Context Protocol) server that wraps
 [Hayabusa](https://github.com/Yamato-Security/hayabusa) — a Windows event log
