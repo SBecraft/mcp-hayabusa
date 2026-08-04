@@ -7,7 +7,6 @@ __pycache__/
 # Machine-local Claude Code settings — not shared
 .claude/settings.local.json
 
-# Scratch/exploration artifacts (tool-output dumps, slide decks)
+# Scratch/exploration artifacts (tool-output dumps)
 credential_access_rules.json
 credential_rules
-hayabusa_rules_poc.pptx

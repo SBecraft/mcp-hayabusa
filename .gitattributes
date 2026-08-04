@@ -1,0 +1,4 @@
+# Office documents are zip containers — never apply newline translation to them.
+*.pptx binary
+*.docx binary
+*.xlsx binary
